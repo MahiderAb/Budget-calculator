@@ -6,6 +6,7 @@ var budgetController = (function() {
         this.description = description;
         this.value = value;
         this.percentage = -1;
+        this.unpaid = false; // custom flag for unpaid expenses
     };
     
     
@@ -20,6 +21,10 @@ var budgetController = (function() {
     
     Expense.prototype.getPercentage = function() {
         return this.percentage;
+    };
+
+    Expense.prototype.toggleUnpaid = function() {
+        this.unpaid = !this.unpaid;
     };
     
     
@@ -54,7 +59,7 @@ var budgetController = (function() {
     
     
     return {
-        addItem: function(type, des, val) {
+        addItem: function(type, des, val, forcedID) {
             var newItem, ID;
             
             //[1 2 3 4 5], next ID = 6
@@ -62,7 +67,9 @@ var budgetController = (function() {
             // ID = last ID + 1
             
             // Create new ID
-            if (data.allItems[type].length > 0) {
+            if (typeof forcedID !== 'undefined') {
+                ID = forcedID;
+            } else if (data.allItems[type].length > 0) {
                 ID = data.allItems[type][data.allItems[type].length - 1].id + 1;
             } else {
                 ID = 0;
@@ -81,6 +88,7 @@ var budgetController = (function() {
             // Return the new element
             return newItem;
         },
+
         
         
         deleteItem: function(type, id) {
@@ -158,6 +166,37 @@ var budgetController = (function() {
             };
         },
         
+        getData: function() {
+            // expose internal structure for persistence or debugging
+            return data;
+        },
+        updateItem: function(type, id, field, newVal) {
+            var items = data.allItems[type];
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].id === id) {
+                    // simple assignment, assume valid field
+                    items[i][field] = newVal;
+                    break;
+                }
+            }
+        },
+        toggleUnpaid: function(id) {
+            var items = data.allItems.exp;
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].id === id) {
+                    items[i].toggleUnpaid();
+                    break;
+                }
+            }
+        },
+        reset: function() {
+            data.allItems.inc = [];
+            data.allItems.exp = [];
+            data.totals.inc = 0;
+            data.totals.exp = 0;
+            data.budget = 0;
+            data.percentage = -1;
+        },
         testing: function() {
             console.log(data);
         }
@@ -184,7 +223,9 @@ var UIController = (function() {
         percentageLabel: '.budget__expenses--percentage',
         container: '.container',
         expensesPercLabel: '.item__percentage',
-        dateLabel: '.budget__title--month'
+        dateLabel: '.budget__title--month',
+        clearButton: '#clearAll',
+        filterCheckbox: '#filterUnpaid'
     };
     
     
@@ -240,11 +281,12 @@ var UIController = (function() {
             if (type === 'inc') {
                 element = DOMstrings.incomeContainer;
                 
-                html = '<div class="item clearfix" id="inc-%id%"> <div class="item__description">%description%</div><div class="right clearfix"><div class="item__value">%value%</div><div class="item__delete"><button class="item__delete--btn"><i class="ion-ios-close-outline"></i></button></div></div></div>';
+                // use Tailwind for spacing & hover background
+                html = '<div class="item clearfix p-3 border-b hover:bg-gray-100 transition-all" id="inc-%id%"> <div class="item__description">%description%</div><div class="right clearfix"><div class="item__value">%value%</div><div class="item__delete"><button class="item__delete--btn"><i class="ion-ios-close-outline"></i></button></div></div></div>';
             } else if (type === 'exp') {
                 element = DOMstrings.expensesContainer;
                 
-                html = '<div class="item clearfix" id="exp-%id%"><div class="item__description">%description%</div><div class="right clearfix"><div class="item__value">%value%</div><div class="item__percentage">21%</div><div class="item__delete"><button class="item__delete--btn"><i class="ion-ios-close-outline"></i></button></div></div></div>';
+                html = '<div class="item clearfix p-3 border-b hover:bg-gray-100 transition-all" id="exp-%id%"><div class="item__description">%description%</div><div class="right clearfix"><div class="item__value">%value%</div><div class="item__percentage">21%</div><div class="item__delete"><button class="item__delete--btn"><i class="ion-ios-close-outline"></i></button></div></div></div>';
             }
             
             // Replace the placeholder text with some actual data
@@ -311,6 +353,22 @@ var UIController = (function() {
             });
             
         },
+
+        updateListItem: function(type, id, field, value) {
+            var el = document.getElementById(type + '-' + id);
+            if (el) {
+                if (field === 'description') {
+                    el.querySelector('.item__description').textContent = value;
+                } else if (field === 'value') {
+                    el.querySelector('.item__value').textContent = formatNumber(value, type);
+                }
+            }
+        },
+
+        clearAllItems: function() {
+            document.querySelector(DOMstrings.incomeContainer).innerHTML = '';
+            document.querySelector(DOMstrings.expensesContainer).innerHTML = '';
+        },
         
         
         displayMonth: function() {
@@ -367,9 +425,33 @@ var controller = (function(budgetCtrl, UICtrl) {
             }
         });
         
+        // catch delete clicks
         document.querySelector(DOM.container).addEventListener('click', ctrlDeleteItem);
+        // allow double‑click editing of description/value
+        document.querySelector(DOM.container).addEventListener('dblclick', ctrlEditItem);
         
-        document.querySelector(DOM.inputType).addEventListener('change', UICtrl.changedType);        
+        // toggle unpaid on expense description click (and update model)
+        document.querySelector(DOM.expensesContainer).addEventListener('click', function(event){
+            if (event.target.classList.contains('item__description')) {
+                var itemEl = event.target.closest('.item');
+                if (itemEl) {
+                    itemEl.classList.toggle('unpaid');
+                    // update underlying data
+                    var itemID = itemEl.id.split('-');
+                    if (itemID[0] === 'exp') {
+                        budgetCtrl.toggleUnpaid(parseInt(itemID[1]));
+                        saveToStorage();
+                    }
+                }
+            }
+        });
+
+        document.querySelector(DOM.inputType).addEventListener('change', UICtrl.changedType);
+        
+        // clear all data
+        document.querySelector(DOM.clearButton).addEventListener('click', ctrlClearAll);
+        // filter unpaid toggle
+        document.querySelector(DOM.filterCheckbox).addEventListener('change', ctrlFilter);
     };
     
     
@@ -383,6 +465,13 @@ var controller = (function(budgetCtrl, UICtrl) {
         
         // 3. Display the budget on the UI
         UICtrl.displayBudget(budget);
+        
+        // 4. persist data after budget changes
+        saveToStorage();
+        // 5. reapply any active filters
+        if (document.querySelector(UICtrl.getDOMstrings().filterCheckbox).checked) {
+            ctrlFilter();
+        }
     };
     
     
@@ -450,7 +539,103 @@ var controller = (function(budgetCtrl, UICtrl) {
         }
     };
     
+    var ctrlEditItem = function(event) {
+        var target = event.target;
+        var field;
+        if (target.classList.contains('item__description')) {
+            field = 'description';
+        } else if (target.classList.contains('item__value')) {
+            field = 'value';
+        } else {
+            return;
+        }
+        var itemEl = target.closest('.item');
+        if (!itemEl) return;
+        var split = itemEl.id.split('-');
+        var type = split[0];
+        var ID = parseInt(split[1]);
+        var current = target.textContent.trim();
+        var newVal = prompt('Edit ' + field + ':', current.replace(/[,\+\- ]/g, ''));
+        if (newVal !== null && newVal !== '') {
+            if (field === 'value') {
+                newVal = parseFloat(newVal);
+                if (isNaN(newVal)) return;
+            }
+            budgetCtrl.updateItem(type, ID, field, newVal);
+            UICtrl.updateListItem(type, ID, field, newVal);
+            updateBudget();
+            if (type === 'exp') updatePercentages();
+        }
+    };
     
+    var ctrlClearAll = function() {
+        if (confirm('Are you sure you want to clear all entries?')) {
+            budgetCtrl.reset();
+            UICtrl.clearAllItems();
+            UICtrl.displayBudget({budget:0,totalInc:0,totalExp:0,percentage:-1});
+            localStorage.removeItem('budgety');
+            // reset filter state
+            var checkbox = document.querySelector(UICtrl.getDOMstrings().filterCheckbox);
+            if (checkbox) {
+                checkbox.checked = false;
+            }
+            ctrlFilter();
+        }
+    };
+    
+    function ctrlFilter() {
+        var showOnly = document.querySelector(UICtrl.getDOMstrings().filterCheckbox).checked;
+        var items = document.querySelectorAll(UICtrl.getDOMstrings().expensesContainer + ' .item');
+        items.forEach(function(it){
+            if (showOnly && !it.classList.contains('unpaid')) {
+                it.style.display = 'none';
+            } else {
+                it.style.display = '';
+            }
+        });
+    }
+    
+    
+    // Save current data to localStorage so it survives reloads
+    var saveToStorage = function() {
+        try {
+            var all = budgetCtrl.getData().allItems;
+            localStorage.setItem('budgety', JSON.stringify(all));
+        } catch(e) {
+            console.warn('Could not save to localStorage', e);
+        }
+    };
+
+    // Read saved items and recreate them at startup
+    var loadFromStorage = function() {
+        var storage = localStorage.getItem('budgety');
+        if (storage) {
+            try {
+                var obj = JSON.parse(storage);
+                ['inc','exp'].forEach(function(type){
+                    if (obj[type]) {
+                        obj[type].forEach(function(item){
+                            // re-create and respect unpaid flag if expense
+                            var newItem = budgetCtrl.addItem(type, item.description, item.value, item.id);
+                            if (type === 'exp' && item.unpaid) {
+                                newItem.unpaid = true;
+                            }
+                            UICtrl.addListItem(newItem, type);
+                            if (type === 'exp' && item.unpaid) {
+                                var el = document.getElementById(type + '-' + newItem.id);
+                                if (el) el.classList.add('unpaid');
+                            }
+                        });
+                    }
+                });
+                updateBudget();
+                updatePercentages();
+            } catch(e) {
+                console.warn('Invalid data in storage', e);
+            }
+        }
+    };
+
     return {
         init: function() {
             console.log('Application has started.');
@@ -462,6 +647,7 @@ var controller = (function(budgetCtrl, UICtrl) {
                 percentage: -1
             });
             setupEventListeners();
+            loadFromStorage();
         }
     };
     
